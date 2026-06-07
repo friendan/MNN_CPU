@@ -223,7 +223,8 @@ std::string OcrEngine::decode(const float* data, int seq_len, int class_num, flo
     std::string result;
     confidence = 1.0f;
     int last_idx = -1;
-    int blank_idx = class_num - 1;
+    // PP-OCR: blank = 0（全角空格），class_num 包含 blank
+    int blank_idx = 0;
 
     for (int t = 0; t < seq_len; t++) {
         int max_idx = 0;
@@ -232,12 +233,17 @@ std::string OcrEngine::decode(const float* data, int seq_len, int class_num, flo
             float val = data[t * class_num + c];
             if (val > max_val) { max_val = val; max_idx = c; }
         }
-        if (max_idx != blank_idx && max_idx != last_idx) {
-            if (max_idx < (int)m_dict.size()) {
-                result += m_dict[max_idx];
-            }
+        if (max_idx == blank_idx) {
+            // blank，跳过
+            continue;
         }
-        if (max_idx != blank_idx) {
+        // CTC 合并重复字符
+        if (max_idx != last_idx) {
+            // 字典索引 = max_idx - 1（去掉 blank 占位）
+            int char_idx = max_idx - 1;
+            if (char_idx >= 0 && char_idx < (int)m_dict.size()) {
+                result += m_dict[char_idx];
+            }
             confidence *= max_val;
         }
         last_idx = max_idx;
@@ -325,18 +331,12 @@ std::vector<TextBox> OcrEngine::detect(const uint8_t* image_data, int width, int
 
     int out_h, out_w;
     if (out_info->order == MNN::Express::NHWC) {
-        // NHWC: 1 x H x W x C
         out_h = out_info->dim[1];
         out_w = out_info->dim[2];
     } else {
-        // NCHW: 1 x C x H x W
         out_h = out_info->dim[2];
         out_w = out_info->dim[3];
     }
-    MNN_PRINT("[OCR] detect output shape: ");
-    for (auto d : out_info->dim) MNN_PRINT("%d ", d);
-    MNN_PRINT(" order=%d => %dx%d\n", out_info->order, out_h, out_w);
-    MNN_PRINT("[OCR] detect output range: min=%f max=%f\n", *std::min_element(out_ptr, out_ptr + out_h * out_w), *std::max_element(out_ptr, out_ptr + out_h * out_w));
     const float det_thresh = 0.05f;
 
     // 二值化
@@ -502,32 +502,72 @@ TextLine OcrEngine::recognize_text(const uint8_t* img, int w, int h, const float
     float cls_conf = 0;
     int need_flip = classify(img, w, h, box, cls_conf);
 
-    // 2. 裁剪到 32 高
-    auto [crop_data, crop_w, crop_h] = crop_region(img, w, h, box, 0, 48);
-    if (crop_data.empty()) return result;
+    // 2. 计算目标尺寸
+    float h_avg = (point_distance(box[0], box[1], box[6], box[7]) +
+                   point_distance(box[2], box[3], box[4], box[5])) / 2.0f;
+    float w_avg = (point_distance(box[0], box[1], box[2], box[3]) +
+                   point_distance(box[4], box[5], box[6], box[7])) / 2.0f;
+    if (h_avg < 1 || w_avg < 1) return result;
 
-    // 翻转
-    if (need_flip && m_cls_module) {
-        std::vector<uint8_t> flipped(crop_data.size());
-        for (int hh = 0; hh < crop_h; hh++)
-            for (int ww = 0; ww < crop_w; ww++)
-                for (int cc = 0; cc < 3; cc++)
-                    flipped[(hh * crop_w + ww) * 3 + cc] = crop_data[((crop_h - 1 - hh) * crop_w + ww) * 3 + cc];
-        crop_data.swap(flipped);
-    }
+    // 裁剪区域边界
+    int min_x = (int)std::max(0.0f, std::min({box[0], box[2], box[4], box[6]}));
+    int min_y = (int)std::max(0.0f, std::min({box[1], box[3], box[5], box[7]}));
+    int max_x = (int)std::min((float)w - 1, std::max({box[0], box[2], box[4], box[6]}));
+    int max_y = (int)std::min((float)h - 1, std::max({box[1], box[3], box[5], box[7]}));
+    int bw = max_x - min_x + 1;
+    int bh = max_y - min_y + 1;
+    if (bw < 2 || bh < 2) return result;
 
     int rec_h = 48;
-    int rec_w = crop_w;
+    int rec_w = std::max(4, (int)(rec_h * w_avg / h_avg + 0.5f));
+    // PP-OCR 要求宽度是 8 的倍数
+    rec_w = (rec_w + 7) / 8 * 8;
 
+    // 用 ImageProcess 做双线性缩放
+    auto src_tensor = MNN::CV::ImageProcess::createImageTensor<uint8_t>(w, h, 4, const_cast<uint8_t*>(img));
+    
+    MNN::CV::ImageProcess::Config cfg;
+    cfg.sourceFormat = MNN::CV::RGBA;
+    cfg.destFormat   = MNN::CV::RGB;
+    cfg.filterType   = MNN::CV::BILINEAR;
+    auto pretreat = std::unique_ptr<MNN::CV::ImageProcess>(MNN::CV::ImageProcess::create(cfg));
+    
+    MNN::CV::Matrix trans;
+    // 从目标 ROI 映射到源图像
+    float src_scale_x = (float)bw / rec_w;
+    float src_scale_y = (float)bh / rec_h;
+    trans.setScale(src_scale_x, src_scale_y);
+    trans.postTranslate((float)min_x, (float)min_y);
+    pretreat->setMatrix(trans);
+
+    // 创建目标 tensor
+    auto dst_tensor = MNN::Tensor::create<uint8_t>({rec_h, rec_w, 3}, nullptr, MNN::Tensor::TENSORFLOW);
+    pretreat->convert(img, w, h, w * 4, dst_tensor->host<uint8_t>(), rec_w, rec_h, 3, 0, halide_type_of<uint8_t>());
+    
+    // 如果分类需要翻转
+    if (need_flip && m_cls_module) {
+        auto data = dst_tensor->host<uint8_t>();
+        std::vector<uint8_t> flipped(data, data + rec_h * rec_w * 3);
+        for (int hh = 0; hh < rec_h; hh++)
+            for (int ww = 0; ww < rec_w; ww++)
+                for (int cc = 0; cc < 3; cc++)
+                    data[(hh * rec_w + ww) * 3 + cc] = flipped[((rec_h - 1 - hh) * rec_w + ww) * 3 + cc];
+    }
+
+    // 输入 tensor
     auto input_var = MNN::Express::_Input({1, 3, rec_h, rec_w}, MNN::Express::NCHW, halide_type_of<float>());
     auto input_ptr = input_var->writeMap<float>();
 
+    auto crop_data = dst_tensor->host<uint8_t>();
     for (int c = 0; c < 3; c++)
         for (int hh = 0; hh < rec_h; hh++)
             for (int ww = 0; ww < rec_w; ww++) {
                 float val = (float)crop_data[(hh * rec_w + ww) * 3 + c];
                 input_ptr[c * rec_h * rec_w + hh * rec_w + ww] = (val / 255.0f - 0.5f) / 0.5f;
             }
+    
+    MNN::Tensor::destroy(src_tensor);
+    MNN::Tensor::destroy(dst_tensor);
 
     auto outputs = m_rec_module->onForward({input_var});
     if (outputs.empty() || !outputs[0]->getInfo()) return result;
@@ -538,7 +578,6 @@ TextLine OcrEngine::recognize_text(const uint8_t* img, int w, int h, const float
     // 解析输出形状
     int seq_len = 0, class_num = 0;
     if (out_info->dim.size() == 4) {
-        // NCHW: 1 x C x 1 x W  or  NHWC: 1 x 1 x W x C
         if (out_info->order == MNN::Express::NCHW) {
             class_num = out_info->dim[1];
             seq_len   = out_info->dim[3];
@@ -554,14 +593,8 @@ TextLine OcrEngine::recognize_text(const uint8_t* img, int w, int h, const float
 
     // 重排为 (seq_len, class_num)
     std::vector<float> reshaped(seq_len * class_num);
-    if (out_info->order == MNN::Express::NCHW && out_info->dim.size() == 4 && out_info->dim[2] == 1) {
-        for (int c = 0; c < class_num; c++)
-            for (int t = 0; t < seq_len; t++)
-                reshaped[t * class_num + c] = out_ptr[c * seq_len + t];
-    } else {
-        memcpy(reshaped.data(), out_ptr, seq_len * class_num * sizeof(float));
-    }
-
+    memcpy(reshaped.data(), out_ptr, seq_len * class_num * sizeof(float));
+    
     float confidence = 0;
     result.text = decode(reshaped.data(), seq_len, class_num, confidence);
     result.confidence = confidence;
@@ -572,16 +605,9 @@ TextLine OcrEngine::recognize_text(const uint8_t* img, int w, int h, const float
 // 完整识别流程
 // ============================================================
 std::vector<TextLine> OcrEngine::recognize(const uint8_t* image_data, int width, int height) {
-    // 临时：跳过检测，直接把整图送识别
+    // 直接整图识别（检测模型输出异常，暂时跳过）
     std::vector<TextLine> results;
-    
-    // 把整图当作一个文本框
-    float box[8] = {
-        0.0f, 0.0f,
-        (float)width-1, 0.0f,
-        (float)width-1, (float)height-1,
-        0.0f, (float)height-1
-    };
+    float box[8] = {0,0,(float)width-1,0,(float)width-1,(float)height-1,0,(float)height-1};
     auto line = recognize_text(image_data, width, height, box);
     if (!line.text.empty()) results.push_back(line);
     return results;
