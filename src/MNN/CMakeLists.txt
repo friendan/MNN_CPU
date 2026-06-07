@@ -4,6 +4,12 @@ project(MNN LANGUAGES C CXX RC)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
+# 使用 LLVM/ClangCL 编译器
+if(WIN32)
+    set(CMAKE_C_COMPILER clang-cl)
+    set(CMAKE_CXX_COMPILER clang-cl)
+endif()
+
 # 链接方式选项: SHARED=DLL, STATIC=静态库
 option(MNN_BUILD_SHARED "Build MNN as shared library (DLL)" ON)
 
@@ -61,7 +67,8 @@ file(GLOB_RECURSE MNN_CPU_BACKEND_SRC
 list(FILTER MNN_CPU_BACKEND_SRC EXCLUDE REGEX ".*riscv/.*")
 list(FILTER MNN_CPU_BACKEND_SRC EXCLUDE REGEX ".*kleidiai/.*")
 list(FILTER MNN_CPU_BACKEND_SRC EXCLUDE REGEX ".*render/.*")
-list(FILTER MNN_CPU_BACKEND_SRC EXCLUDE REGEX ".*x86_x64/.*")
+
+
 
 # OCR 引擎源文件
 file(GLOB_RECURSE MNN_OCR_SRC ${CMAKE_CURRENT_LIST_DIR}/source/ocr/*.cpp)
@@ -103,6 +110,18 @@ if(WIN32 AND MNN_BUILD_SHARED)
     list(APPEND MNN_SOURCES ${MNN_RESOURCE_FILE})
 endif()
 
+# Clang 需要为 AVX/AVX2/SSE 源文件显式启用 target feature
+if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+    file(GLOB_RECURSE MNN_X86_AVX_SRC ${CMAKE_CURRENT_LIST_DIR}/source/backend/cpu/x86_x64/avx/*.cpp)
+    file(GLOB_RECURSE MNN_X86_AVX2_SRC ${CMAKE_CURRENT_LIST_DIR}/source/backend/cpu/x86_x64/avxfma/*.cpp)
+    file(GLOB_RECURSE MNN_X86_AVX512_SRC ${CMAKE_CURRENT_LIST_DIR}/source/backend/cpu/x86_x64/avx512/*.cpp)
+    file(GLOB_RECURSE MNN_X86_SSE_SRC ${CMAKE_CURRENT_LIST_DIR}/source/backend/cpu/x86_x64/sse/*.cpp)
+    set_source_files_properties(${MNN_X86_AVX_SRC} PROPERTIES COMPILE_FLAGS "-mavx -mavx2")
+    set_source_files_properties(${MNN_X86_AVX2_SRC} PROPERTIES COMPILE_FLAGS "-mavx -mavx2 -mfma")
+    set_source_files_properties(${MNN_X86_AVX512_SRC} PROPERTIES COMPILE_FLAGS "-mavx512f -mavx512bw -mavx512vl -mavx512dq -mfma")
+    set_source_files_properties(${MNN_X86_SSE_SRC} PROPERTIES COMPILE_FLAGS "-msse4.1")
+endif()
+
 set_target_properties(MNN PROPERTIES
     ARCHIVE_OUTPUT_DIRECTORY_DEBUG "${MNN_OUTPUT_DIR}"
     ARCHIVE_OUTPUT_DIRECTORY_RELEASE "${MNN_OUTPUT_DIR}"
@@ -113,3 +132,8 @@ set_target_properties(MNN PROPERTIES
     OUTPUT_NAME_DEBUG "MNN_dbg"
     OUTPUT_NAME_RELEASE "MNN"
 )
+
+# lld-link 允许重复符号（MNN 的 x86 优化与通用 fallback 冲突）
+if(CMAKE_CXX_COMPILER_ID MATCHES "Clang" AND MSVC)
+    target_link_options(MNN PRIVATE /FORCE:MULTIPLE)
+endif()

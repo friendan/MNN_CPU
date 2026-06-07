@@ -16,8 +16,10 @@ MNN_CPU/
 │   └── OCR_Test_dbg.exe     测试程序 Debug
 ├── src/
 │   ├── MNN/                 MNN 推理引擎源码
-│   ├── test_ocr/            测试工程
-├── create/debug/xxx.bat     编译脚本（见下方）
+│   └── test_ocr/            测试工程
+├── init_env.bat             初始化 VS 编译环境
+├── create_xxx_sln.bat       生成工程脚本
+├── build_xxx.bat            编译脚本
 └── README.md
 ```
 
@@ -29,7 +31,7 @@ MNN_CPU/
 
 ## 编译
 
-打开 **VS 2026 x64 本机工具命令提示符**，在项目根目录运行：
+双击或命令行运行对应 bat 即可（不需要手动进 VS 命令提示符，`init_env.bat` 会自动初始化）：
 
 ```bat
 REM ---- Debug ----
@@ -51,9 +53,28 @@ build_ocr_test_release.bat
 
 ```bat
 cd bin
-OCR_Test_dbg.exe                使用 bin/../bin/ocr.png
+OCR_Test_dbg.exe                使用 bin/ocr.png
 OCR_Test_dbg.exe my_pic.png     指定图片
 ```
+
+## 技术说明
+
+### 为什么不用 `-T ClangCL`？
+
+Ninja 生成器不支持 `-T`（toolset）和 `-A`（platform）参数，这两个是 Visual Studio 生成器专用的。所以我们把编译器选择写在 CMakeLists.txt 中：
+
+```cmake
+if(WIN32)
+    set(CMAKE_C_COMPILER clang-cl)
+    set(CMAKE_CXX_COMPILER clang-cl)
+endif()
+```
+
+这样 Ninja 也能用上 LLVM/ClangCL。`-A x64` 也不需要，因为 `init_env.bat` 中 `vcvarsall.bat x64` 已经设好了 x64 环境。
+
+### 为什么有 `/FORCE:MULTIPLE`？
+
+MNN 的源码中，`x86_x64/` 目录下的 AVX2/SSE/AVX512 优化实现与 `compute/CommonOptFunction.cpp` 等通用 fallback 定义了同名函数。MSVC 的 link.exe 遇到重复符号会报错，lld-link 也同理。通过 `/FORCE:MULTIPLE` 让链接器允许重复符号，取第一个定义（即优化实现优先），fallback 被忽略。这保证了 AVX2 等优化的正常生效。
 
 ## 在自己项目中使用
 
@@ -106,3 +127,4 @@ int main() {
 
 - 使用 `/MT` 静态 CRT 链接，部署时无需 VC 运行时库
 - Debug 版 DLL 加 `_dbg` 后缀，Release 版无后缀，两者可共存于 `bin/`
+- MNN 源码中的代码页警告（C4819）是源文件编码问题，不影响功能

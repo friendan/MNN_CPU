@@ -5,6 +5,6 @@ set "BUILD_DIR=build_mnn_release"
 if exist %BUILD_DIR% rmdir /s /q %BUILD_DIR%
 mkdir %BUILD_DIR%
 cd %BUILD_DIR%
-cmake -G Ninja -DCMAKE_BUILD_TYPE=Release -T ClangCL -A x64 ../src/MNN
+cmake -G Ninja -DCMAKE_BUILD_TYPE=Release ../src/MNN
 if %ERRORLEVEL% neq 0 exit /b 1
 echo [OK]
