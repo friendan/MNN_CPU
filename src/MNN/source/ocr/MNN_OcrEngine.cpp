@@ -101,24 +101,17 @@ bool OcrEngine::init(int num_thread) {
         config.shapeMutable = true;
         config.rearrange = true;
 
-        // 先通过 Variable::loadMap 获取模型的所有 tensor 名称
-        auto allVars = MNN::Express::Variable::loadMap(model_data.data(), model_data.size());
-        auto inOut = MNN::Express::Variable::getInputAndOutput(allVars);
-        std::vector<std::string> inputNames, outputNames;
-        for (auto& kv : inOut.first)  inputNames.push_back(kv.first);
-        for (auto& kv : inOut.second) outputNames.push_back(kv.first);
-        MNN_PRINT("[OCR] Det model inputs:");
-        for (auto& s : inputNames) MNN_PRINT(" %s", s.c_str());
-        MNN_PRINT("\n");
-        MNN_PRINT("[OCR] Det model outputs:");
-        for (auto& s : outputNames) MNN_PRINT(" %s", s.c_str());
-        MNN_PRINT("\n");
-        m_det_module.reset(MNN::Express::Module::load(inputNames, outputNames, model_data.data(), model_data.size(), rtMgr, &config));
+        // 用 getInfo 获取实际的输入输出名
+        m_det_module.reset(MNN::Express::Module::load({}, {}, model_data.data(), model_data.size(), rtMgr, &config));
         if (!m_det_module) {
             MNN_ERROR("[OCR] Failed to load detection model\n");
             return false;
         }
-        MNN_PRINT("[OCR] Detection model loaded\n");
+        auto detInfo = m_det_module->getInfo();
+        if (detInfo && detInfo->inputNames.size() > 0 && detInfo->outputNames.size() > 0) {
+            // 用准确的输入输出名重新加载
+            m_det_module.reset(MNN::Express::Module::load(detInfo->inputNames, detInfo->outputNames, model_data.data(), model_data.size(), rtMgr, &config));
+        }
     }
 
     // 3. 从资源加载识别模型
@@ -136,21 +129,24 @@ bool OcrEngine::init(int num_thread) {
 
         MNN::Express::Module::Config config;
         config.shapeMutable = false;
-                config.rearrange = true;
+        config.rearrange = true;
 
-                auto allVars = MNN::Express::Variable::loadMap(model_data.data(), model_data.size());
-                auto inOut = MNN::Express::Variable::getInputAndOutput(allVars);
-                std::vector<std::string> inputNames, outputNames;
-                for (auto& kv : inOut.first)  inputNames.push_back(kv.first);
-                for (auto& kv : inOut.second) outputNames.push_back(kv.first);
-                MNN_PRINT("[OCR] Rec model inputs:");
-                for (auto& s : inputNames) MNN_PRINT(" %s", s.c_str());
-                MNN_PRINT("\n");
-                MNN_PRINT("[OCR] Rec model outputs:");
-                for (auto& s : outputNames) MNN_PRINT(" %s", s.c_str());
-                MNN_PRINT("\n");
-                m_rec_module.reset(MNN::Express::Module::load(inputNames, outputNames, model_data.data(), model_data.size(), rtMgr, &config));
-        if (!m_rec_module) {
+        m_rec_module.reset(MNN::Express::Module::load({}, {}, model_data.data(), model_data.size(), rtMgr, &config));
+        if (m_rec_module) {
+            auto recInfo = m_rec_module->getInfo();
+            if (recInfo) {
+                MNN_PRINT("[OCR] Rec model defaultFormat=%d\n", recInfo->defaultFormat);
+                for (int i = 0; i < recInfo->inputs.size(); i++) {
+                    MNN_PRINT("[OCR] Rec input[%d]: name=%s dims=", i, recInfo->inputNames[i].c_str());
+                    for (auto d : recInfo->inputs[i].dim) MNN_PRINT("%d ", d);
+                    MNN_PRINT(" order=%d\n", recInfo->inputs[i].order);
+                }
+                for (int i = 0; i < recInfo->outputNames.size(); i++) {
+                    MNN_PRINT("[OCR] Rec output[%d]: %s\n", i, recInfo->outputNames[i].c_str());
+                }
+            }
+            MNN_PRINT("[OCR] Recognition model loaded\n");
+        } else {
             std::vector<std::string> inputs = {"input"};
             std::vector<std::string> outputs = {"output"};
             m_rec_module.reset(MNN::Express::Module::load(inputs, outputs, model_data.data(), model_data.size(), rtMgr, &config));
@@ -179,19 +175,22 @@ bool OcrEngine::init(int num_thread) {
             config.shapeMutable = false;
             config.rearrange = true;
 
-            auto allVars = MNN::Express::Variable::loadMap(model_data.data(), model_data.size());
-            auto inOut = MNN::Express::Variable::getInputAndOutput(allVars);
-            std::vector<std::string> inputNames, outputNames;
-            for (auto& kv : inOut.first)  inputNames.push_back(kv.first);
-            for (auto& kv : inOut.second) outputNames.push_back(kv.first);
-            MNN_PRINT("[OCR] Cls model inputs:");
-            for (auto& s : inputNames) MNN_PRINT(" %s", s.c_str());
-            MNN_PRINT("\n");
-            MNN_PRINT("[OCR] Cls model outputs:");
-            for (auto& s : outputNames) MNN_PRINT(" %s", s.c_str());
-            MNN_PRINT("\n");
-            m_cls_module.reset(MNN::Express::Module::load(inputNames, outputNames, model_data.data(), model_data.size(), rtMgr, &config));
-            if (!m_cls_module) {
+            m_cls_module.reset(MNN::Express::Module::load({}, {}, model_data.data(), model_data.size(), rtMgr, &config));
+            if (m_cls_module) {
+                auto clsInfo = m_cls_module->getInfo();
+                if (clsInfo) {
+                    MNN_PRINT("[OCR] Cls model defaultFormat=%d\n", clsInfo->defaultFormat);
+                    for (int i = 0; i < clsInfo->inputs.size(); i++) {
+                        MNN_PRINT("[OCR] Cls input[%d]: name=%s dims=", i, clsInfo->inputNames[i].c_str());
+                        for (auto d : clsInfo->inputs[i].dim) MNN_PRINT("%d ", d);
+                        MNN_PRINT(" order=%d\n", clsInfo->inputs[i].order);
+                    }
+                    for (int i = 0; i < clsInfo->outputNames.size(); i++) {
+                        MNN_PRINT("[OCR] Cls output[%d]: %s\n", i, clsInfo->outputNames[i].c_str());
+                    }
+                }
+                MNN_PRINT("[OCR] Classification model loaded\n");
+            } else {
                 std::vector<std::string> inputs = {"input"};
                 std::vector<std::string> outputs = {"output"};
                 m_cls_module.reset(MNN::Express::Module::load(inputs, outputs, model_data.data(), model_data.size(), rtMgr, &config));
@@ -254,20 +253,41 @@ std::vector<TextBox> OcrEngine::detect(const uint8_t* image_data, int width, int
     std::vector<TextBox> results;
     if (!m_det_module) return results;
 
-    int det_short_size = 960;
-    float scale = std::min((float)det_short_size / width, (float)det_short_size / height);
-    float max_scale = 1920.0f / std::max(width, height);
-    scale = std::min(scale, max_scale);
-    int resized_w = std::max(32, (int)(width * scale + 0.5f) / 32 * 32);
-    int resized_h = std::max(32, (int)(height * scale + 0.5f) / 32 * 32);
+    MNN_PRINT("[OCR] detect: input image %dx%d\n", width, height);
 
-    auto input_var = MNN::Express::_Input({1, 3, resized_h, resized_w}, MNN::Express::NCHW, halide_type_of<float>());
+    int det_short_size = 960;
+    int det_max_side = 1920;
+    float scale = 1.0f;
+    // 先限制最大边
+    if (std::max(width, height) > det_max_side) {
+        scale = (float)det_max_side / std::max(width, height);
+    }
+    int resized_w = (int)(width * scale + 0.5f);
+    int resized_h = (int)(height * scale + 0.5f);
+    // 再保证短边 >= short_size
+    if (std::min(resized_w, resized_h) < det_short_size) {
+        scale = (float)det_short_size / std::min(width, height);
+        resized_w = (int)(width * scale + 0.5f);
+        resized_h = (int)(height * scale + 0.5f);
+        // 如果此时长边超过限制，重新限制
+        if (std::max(resized_w, resized_h) > det_max_side) {
+            scale = (float)det_max_side / std::max(width, height);
+            resized_w = (int)(width * scale + 0.5f);
+            resized_h = (int)(height * scale + 0.5f);
+        }
+    }
+    // 32 对齐
+    resized_w = std::max(32, (resized_w / 32) * 32);
+    resized_h = std::max(32, (resized_h / 32) * 32);
+
+    // 模型是 NCHW 格式
+    auto input_var = MNN::Express::_Input({1, 3, resized_h, resized_w}, MNN::Express::NC4HW4, halide_type_of<float>());
     auto input_ptr = input_var->writeMap<float>();
 
-    // ImageProcess 预处理: RGBA → BGR + resize + normalize
+    // ImageProcess 预处理: RGBA → RGB + resize + normalize
     MNN::CV::ImageProcess::Config cfg;
     cfg.sourceFormat = MNN::CV::RGBA;
-    cfg.destFormat   = MNN::CV::BGR;
+    cfg.destFormat   = MNN::CV::RGB;
     cfg.filterType   = MNN::CV::BILINEAR;
     float mean[3]  = {123.675f, 116.28f, 103.53f};
     float norm[3]  = {0.01712475f, 0.017507f, 0.01742919f};
@@ -283,10 +303,17 @@ std::vector<TextBox> OcrEngine::detect(const uint8_t* image_data, int width, int
     pretreat->convert(image_data, width, height, width * 4,
                       hwc_buf.data(), resized_w, resized_h, 3, 0, halide_type_of<float>());
 
-    for (int c = 0; c < 3; c++)
-        for (int h = 0; h < resized_h; h++)
-            for (int w = 0; w < resized_w; w++)
-                input_ptr[c * resized_h * resized_w + h * resized_w + w] = hwc_buf[(h * resized_w + w) * 3 + c];
+    // NC4HW4: HWC → NC4HW4，每 4 个通道一组
+    int plane = resized_h * resized_w;
+    int c4 = (3 + 3) / 4;
+    for (int c = 0; c < 3; c++) {
+        for (int h = 0; h < resized_h; h++) {
+            for (int w = 0; w < resized_w; w++) {
+                int nc4hw4_idx = (c / 4) * plane * 4 + h * resized_w * 4 + w * 4 + (c % 4);
+                input_ptr[nc4hw4_idx] = hwc_buf[(h * resized_w + w) * 3 + c];
+            }
+        }
+    }
 
     auto outputs = m_det_module->onForward({input_var});
     if (outputs.empty()) return results;
@@ -296,22 +323,44 @@ std::vector<TextBox> OcrEngine::detect(const uint8_t* image_data, int width, int
     if (!out_info) return results;
     auto out_ptr = out_var->readMap<float>();
 
-    int out_h = out_info->dim[2];
-    int out_w = out_info->dim[3];
-    const float det_thresh = 0.3f;
+    int out_h, out_w;
+    if (out_info->order == MNN::Express::NHWC) {
+        // NHWC: 1 x H x W x C
+        out_h = out_info->dim[1];
+        out_w = out_info->dim[2];
+    } else {
+        // NCHW: 1 x C x H x W
+        out_h = out_info->dim[2];
+        out_w = out_info->dim[3];
+    }
+    MNN_PRINT("[OCR] detect output shape: ");
+    for (auto d : out_info->dim) MNN_PRINT("%d ", d);
+    MNN_PRINT(" order=%d => %dx%d\n", out_info->order, out_h, out_w);
+    MNN_PRINT("[OCR] detect output range: min=%f max=%f\n", *std::min_element(out_ptr, out_ptr + out_h * out_w), *std::max_element(out_ptr, out_ptr + out_h * out_w));
+    const float det_thresh = 0.05f;
 
     // 二值化
     std::vector<uint8_t> bitmap(out_h * out_w, 0);
-    for (int i = 0; i < out_h * out_w; i++)
-        if (out_ptr[i] > det_thresh) bitmap[i] = 255;
+    int positive = 0;
+    for (int i = 0; i < out_h * out_w; i++) {
+        if (out_ptr[i] > det_thresh) {
+            bitmap[i] = 255;
+            positive++;
+        }
+    }
+    MNN_PRINT("[OCR] detect positive pixels: %d / %d\n", positive, out_h * out_w);
 
+    // 改用概率图直接做投影（不过二值化）
+    std::vector<float> prob(out_h * out_w);
+    for (int i = 0; i < out_h * out_w; i++)
+        prob[i] = out_ptr[i];
     // 水平投影找文本行
     std::vector<std::pair<int,int>> text_rows;
     {
-        std::vector<int> row_sum(out_h, 0);
+        std::vector<float> row_sum(out_h, 0.0f);
         for (int r = 0; r < out_h; r++)
             for (int c = 0; c < out_w; c++)
-                if (bitmap[r * out_w + c]) row_sum[r]++;
+                row_sum[r] += prob[r * out_w + c];
 
         bool in_text = false;
         int start = 0;
@@ -454,7 +503,7 @@ TextLine OcrEngine::recognize_text(const uint8_t* img, int w, int h, const float
     int need_flip = classify(img, w, h, box, cls_conf);
 
     // 2. 裁剪到 32 高
-    auto [crop_data, crop_w, crop_h] = crop_region(img, w, h, box, 0, 32);
+    auto [crop_data, crop_w, crop_h] = crop_region(img, w, h, box, 0, 48);
     if (crop_data.empty()) return result;
 
     // 翻转
@@ -467,7 +516,7 @@ TextLine OcrEngine::recognize_text(const uint8_t* img, int w, int h, const float
         crop_data.swap(flipped);
     }
 
-    int rec_h = 32;
+    int rec_h = 48;
     int rec_w = crop_w;
 
     auto input_var = MNN::Express::_Input({1, 3, rec_h, rec_w}, MNN::Express::NCHW, halide_type_of<float>());
@@ -523,15 +572,18 @@ TextLine OcrEngine::recognize_text(const uint8_t* img, int w, int h, const float
 // 完整识别流程
 // ============================================================
 std::vector<TextLine> OcrEngine::recognize(const uint8_t* image_data, int width, int height) {
-    auto boxes = detect(image_data, width, height);
-    std::sort(boxes.begin(), boxes.end(),
-              [](const TextBox& a, const TextBox& b) { return a.box_points[1] < b.box_points[1]; });
-
+    // 临时：跳过检测，直接把整图送识别
     std::vector<TextLine> results;
-    for (auto& box : boxes) {
-        auto line = recognize_text(image_data, width, height, box.box_points);
-        if (!line.text.empty()) results.push_back(line);
-    }
+    
+    // 把整图当作一个文本框
+    float box[8] = {
+        0.0f, 0.0f,
+        (float)width-1, 0.0f,
+        (float)width-1, (float)height-1,
+        0.0f, (float)height-1
+    };
+    auto line = recognize_text(image_data, width, height, box);
+    if (!line.text.empty()) results.push_back(line);
     return results;
 }
 

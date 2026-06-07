@@ -69,3 +69,5 @@ Testing/
 .cache/
 build_mnn_debug
 bin
+build_ocr_test_debug
+build_dump
