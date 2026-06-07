@@ -1,14 +1,16 @@
 cmake_minimum_required(VERSION 3.16)
+
+# 使用 LLVM/ClangCL 编译器（必须在 project() 之前设置）
+if(WIN32)
+    set(CMAKE_C_COMPILER clang-cl)
+    set(CMAKE_CXX_COMPILER clang-cl)
+    set(CMAKE_RC_COMPILER rc.exe)
+endif()
+
 project(MNN LANGUAGES C CXX RC)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
-
-# 使用 LLVM/ClangCL 编译器
-if(WIN32)
-    set(CMAKE_C_COMPILER clang-cl)
-    set(CMAKE_CXX_COMPILER clang-cl)
-endif()
 
 # 链接方式选项: SHARED=DLL, STATIC=静态库
 option(MNN_BUILD_SHARED "Build MNN as shared library (DLL)" ON)
@@ -103,11 +105,19 @@ set_source_files_properties(
 set(MNN_OUTPUT_DIR "${CMAKE_CURRENT_LIST_DIR}/../../bin")
 
 # 添加 Windows 资源文件（嵌入 OCR 模型文件）
-# .rc 文件放在 src/MNN/ 下，这样 models/ 是相对路径可直接使用
 if(WIN32 AND MNN_BUILD_SHARED)
-    set(MNN_RESOURCE_FILE ${CMAKE_CURRENT_LIST_DIR}/ocr_resources.rc)
-    set_source_files_properties(${MNN_RESOURCE_FILE} PROPERTIES LANGUAGE RC)
-    list(APPEND MNN_SOURCES ${MNN_RESOURCE_FILE})
+    set(MNN_RC_FILE ${CMAKE_CURRENT_LIST_DIR}/ocr_resources.rc)
+    set(MNN_RES_FILE ${CMAKE_CURRENT_BINARY_DIR}/ocr_resources.res)
+    add_custom_command(
+        OUTPUT ${MNN_RES_FILE}
+        COMMAND rc.exe /fo${MNN_RES_FILE} ${MNN_RC_FILE}
+        MAIN_DEPENDENCY ${MNN_RC_FILE}
+        COMMENT "Compiling Windows resources..."
+    )
+    add_library(MNN_OBJECT OBJECT IMPORTED)
+    set_target_properties(MNN_OBJECT PROPERTIES IMPORTED_OBJECTS ${MNN_RES_FILE})
+    add_dependencies(MNN_OBJECT ${MNN_RES_FILE})
+    target_link_libraries(MNN PRIVATE MNN_OBJECT)
 endif()
 
 # Clang 需要为 AVX/AVX2/SSE 源文件显式启用 target feature

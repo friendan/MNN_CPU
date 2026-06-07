@@ -1,12 +1,13 @@
 cmake_minimum_required(VERSION 3.16)
-project(OCR_Test LANGUAGES C)
 
-set(CMAKE_C_STANDARD 11)
-
-# 使用 LLVM/ClangCL 编译器
+# 使用 LLVM/ClangCL 编译器（必须在 project() 之前设置）
 if(WIN32)
     set(CMAKE_C_COMPILER clang-cl)
 endif()
+
+project(OCR_Test LANGUAGES C)
+
+set(CMAKE_C_STANDARD 11)
 
 # MT / MTd 运行时链接
 if(MSVC)

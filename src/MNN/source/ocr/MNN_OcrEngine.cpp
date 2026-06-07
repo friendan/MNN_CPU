@@ -36,22 +36,24 @@ static float point_distance(float x1, float y1, float x2, float y2) {
 // ============================================================
 // 从 Windows 资源加载二进制数据
 // ============================================================
-// 链接器生成的 DLL 基地址，可作为 HMODULE 使用
-extern "C" IMAGE_DOS_HEADER __ImageBase;
-#define DLL_HINSTANCE ((HMODULE)&__ImageBase)
+// 通过函数地址获取所属 DLL 的模块句柄
+static HMODULE get_self_module() {
+    HMODULE hMod = NULL;
+    GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+        (LPCWSTR)&get_self_module, &hMod);
+    return hMod;
+}
 
 bool load_resource(int res_id, const char* res_type, std::vector<uint8_t>& out) {
-    HMODULE hMod = DLL_HINSTANCE;
-    HRSRC hRsrc = FindResourceW(hMod, MAKEINTRESOURCEW(res_id), L"MNN_MODEL");
+    HMODULE hMod = get_self_module();
+    if (!hMod) return false;
+    HRSRC hRsrc = FindResourceW(hMod, MAKEINTRESOURCEW(res_id), MAKEINTRESOURCEW(10));
     if (!hRsrc) return false;
-
     HGLOBAL hGlobal = LoadResource(hMod, hRsrc);
     if (!hGlobal) return false;
-
     DWORD size = SizeofResource(hMod, hRsrc);
     const uint8_t* data = (const uint8_t*)LockResource(hGlobal);
     if (!data || size == 0) return false;
-
     out.assign(data, data + size);
     return true;
 }
@@ -99,18 +101,19 @@ bool OcrEngine::init(int num_thread) {
         config.shapeMutable = true;
         config.rearrange = true;
 
-        // 尝试多种输入/输出名组合加载检测模型
-        std::vector<std::string> inputs = {"x"};
-        std::vector<std::string> outputs = {"sigmoid_0.tmp_0", "tmp_17"};
-        m_det_module.reset(MNN::Express::Module::load(inputs, outputs, model_data.data(), model_data.size(), rtMgr, &config));
-        if (!m_det_module) {
-            outputs = {"output"};
-            m_det_module.reset(MNN::Express::Module::load(inputs, outputs, model_data.data(), model_data.size(), rtMgr, &config));
-        }
-        if (!m_det_module) {
-            inputs = {"input"}; outputs = {"output"};
-            m_det_module.reset(MNN::Express::Module::load(inputs, outputs, model_data.data(), model_data.size(), rtMgr, &config));
-        }
+        // 先通过 Variable::loadMap 获取模型的所有 tensor 名称
+        auto allVars = MNN::Express::Variable::loadMap(model_data.data(), model_data.size());
+        auto inOut = MNN::Express::Variable::getInputAndOutput(allVars);
+        std::vector<std::string> inputNames, outputNames;
+        for (auto& kv : inOut.first)  inputNames.push_back(kv.first);
+        for (auto& kv : inOut.second) outputNames.push_back(kv.first);
+        MNN_PRINT("[OCR] Det model inputs:");
+        for (auto& s : inputNames) MNN_PRINT(" %s", s.c_str());
+        MNN_PRINT("\n");
+        MNN_PRINT("[OCR] Det model outputs:");
+        for (auto& s : outputNames) MNN_PRINT(" %s", s.c_str());
+        MNN_PRINT("\n");
+        m_det_module.reset(MNN::Express::Module::load(inputNames, outputNames, model_data.data(), model_data.size(), rtMgr, &config));
         if (!m_det_module) {
             MNN_ERROR("[OCR] Failed to load detection model\n");
             return false;
@@ -133,17 +136,23 @@ bool OcrEngine::init(int num_thread) {
 
         MNN::Express::Module::Config config;
         config.shapeMutable = false;
-        config.rearrange = true;
+                config.rearrange = true;
 
-        std::vector<std::string> inputs = {"x"};
-        std::vector<std::string> outputs = {"save_infer_model/scale_0.tmp_0"};
-        m_rec_module.reset(MNN::Express::Module::load(inputs, outputs, model_data.data(), model_data.size(), rtMgr, &config));
+                auto allVars = MNN::Express::Variable::loadMap(model_data.data(), model_data.size());
+                auto inOut = MNN::Express::Variable::getInputAndOutput(allVars);
+                std::vector<std::string> inputNames, outputNames;
+                for (auto& kv : inOut.first)  inputNames.push_back(kv.first);
+                for (auto& kv : inOut.second) outputNames.push_back(kv.first);
+                MNN_PRINT("[OCR] Rec model inputs:");
+                for (auto& s : inputNames) MNN_PRINT(" %s", s.c_str());
+                MNN_PRINT("\n");
+                MNN_PRINT("[OCR] Rec model outputs:");
+                for (auto& s : outputNames) MNN_PRINT(" %s", s.c_str());
+                MNN_PRINT("\n");
+                m_rec_module.reset(MNN::Express::Module::load(inputNames, outputNames, model_data.data(), model_data.size(), rtMgr, &config));
         if (!m_rec_module) {
-            outputs = {"softmax_0.tmp_0", "output"};
-            m_rec_module.reset(MNN::Express::Module::load(inputs, outputs, model_data.data(), model_data.size(), rtMgr, &config));
-        }
-        if (!m_rec_module) {
-            inputs = {"input"}; outputs = {"output"};
+            std::vector<std::string> inputs = {"input"};
+            std::vector<std::string> outputs = {"output"};
             m_rec_module.reset(MNN::Express::Module::load(inputs, outputs, model_data.data(), model_data.size(), rtMgr, &config));
         }
         if (!m_rec_module) {
@@ -170,11 +179,21 @@ bool OcrEngine::init(int num_thread) {
             config.shapeMutable = false;
             config.rearrange = true;
 
-            std::vector<std::string> inputs = {"x"};
-            std::vector<std::string> outputs = {"save_infer_model/scale_0.tmp_0"};
-            m_cls_module.reset(MNN::Express::Module::load(inputs, outputs, model_data.data(), model_data.size(), rtMgr, &config));
+            auto allVars = MNN::Express::Variable::loadMap(model_data.data(), model_data.size());
+            auto inOut = MNN::Express::Variable::getInputAndOutput(allVars);
+            std::vector<std::string> inputNames, outputNames;
+            for (auto& kv : inOut.first)  inputNames.push_back(kv.first);
+            for (auto& kv : inOut.second) outputNames.push_back(kv.first);
+            MNN_PRINT("[OCR] Cls model inputs:");
+            for (auto& s : inputNames) MNN_PRINT(" %s", s.c_str());
+            MNN_PRINT("\n");
+            MNN_PRINT("[OCR] Cls model outputs:");
+            for (auto& s : outputNames) MNN_PRINT(" %s", s.c_str());
+            MNN_PRINT("\n");
+            m_cls_module.reset(MNN::Express::Module::load(inputNames, outputNames, model_data.data(), model_data.size(), rtMgr, &config));
             if (!m_cls_module) {
-                inputs = {"input"}; outputs = {"output"};
+                std::vector<std::string> inputs = {"input"};
+                std::vector<std::string> outputs = {"output"};
                 m_cls_module.reset(MNN::Express::Module::load(inputs, outputs, model_data.data(), model_data.size(), rtMgr, &config));
             }
             if (m_cls_module) {

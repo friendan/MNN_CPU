@@ -1,5 +1,5 @@
 // MNN OCR 模型资源定义
-// 使用自定义资源类型 "MNN_MODEL"，通过整数 ID 索引：
+// 使用 RCDATA 标准资源类型，通过整数 ID 索引：
 //   100 - 检测模型
 //   101 - 识别模型
 //   102 - 方向分类模型
@@ -7,7 +7,7 @@
 
 #include "source/ocr/resource.h"
 
-IDR_DET_MODEL   MNN_MODEL "models/ch_PP-OCRv5_det_mobile.mnn"
-IDR_REC_MODEL   MNN_MODEL "models/ch_PP-OCRv5_rec_mobile.mnn"
-IDR_CLS_MODEL   MNN_MODEL "models/ch_PP-LCNet_x1_0_textline_ori_cls_server.mnn"
-IDR_DICT_FILE   MNN_MODEL "models/ppocrv5_dict.txt"
+IDR_DET_MODEL RCDATA "models/ch_PP-OCRv5_det_mobile.mnn"
+IDR_REC_MODEL RCDATA "models/ch_PP-OCRv5_rec_mobile.mnn"
+IDR_CLS_MODEL RCDATA "models/ch_PP-LCNet_x1_0_textline_ori_cls_server.mnn"
+IDR_DICT_FILE RCDATA "models/ppocrv5_dict.txt"

@@ -22,6 +22,9 @@ typedef struct {
 } OCRResult;
 
 int main(int argc, char* argv[]) {
+    /* 设置控制台为 UTF-8 编码 */
+    SetConsoleOutputCP(CP_UTF8);
+
     const char* image_path = "ocr.png";
     if (argc > 1) image_path = argv[1];
 
