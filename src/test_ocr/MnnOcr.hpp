@@ -17,13 +17,17 @@
  *      ocr.load();              // 自动加载 MNN_dbg.dll 或 MNN.dll
  *      ocr.init(4);             // 初始化 OCR 引擎（4线程）
  *
- *      // 从文件识别
+ *      // 从文件识别（返回完整结果，含文本框和置信度）
  *      auto r = ocr.recognizeFile("test.png");
  *      for (auto& line : r.lines)
  *          printf("%s\n", line.text.c_str());
  *
+ *      // 从文件识别（直接返回文本，多行用\n分隔）
+ *      std::string text = ocr.recognizeFileText("test.png");
+ *
  *      // 或从内存 RGBA 数据识别
  *      auto r2 = ocr.recognize(rgba_data, width, height);
+ *      std::string text2 = ocr.recognizeText(rgba_data, width, height);
  *
  *      ocr.destroy();           // 销毁引擎
  *
@@ -91,7 +95,7 @@ public:
         std::vector<Line> lines;
     };
 
-    /** 从文件识别 */
+    /** 从文件识别，返回完整结果 */
     Result recognizeFile(const char* image_path) {
         Result r;
         if (!m_dll || !m_recog_file) return r;
@@ -109,7 +113,18 @@ public:
         return r;
     }
 
-    /** 从内存 RGBA 数据识别 */
+    /** 从文件识别，只返回拼接后的文本 */
+    std::string recognizeFileText(const char* image_path) {
+        auto r = recognizeFile(image_path);
+        std::string s;
+        for (auto& line : r.lines) {
+            if (!s.empty()) s += "\n";
+            s += line.text;
+        }
+        return s;
+    }
+
+    /** 从内存 RGBA 数据识别，返回完整结果 */
     Result recognize(const unsigned char* rgba, int w, int h) {
         Result r;
         if (!m_dll || !m_recog) return r;
@@ -125,6 +140,17 @@ public:
             m_free(raw);
         }
         return r;
+    }
+
+    /** 从内存 RGBA 数据识别，只返回拼接后的文本 */
+    std::string recognizeText(const unsigned char* rgba, int w, int h) {
+        auto r = recognize(rgba, w, h);
+        std::string s;
+        for (auto& line : r.lines) {
+            if (!s.empty()) s += "\n";
+            s += line.text;
+        }
+        return s;
     }
 
 private:
