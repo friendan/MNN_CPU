@@ -128,7 +128,7 @@ bool OcrEngine::init(int num_thread) {
             MNN::Express::Executor::RuntimeManager::createRuntimeManager(sched));
 
         MNN::Express::Module::Config config;
-        config.shapeMutable = false;
+        config.shapeMutable = true;
         config.rearrange = true;
 
         m_rec_module.reset(MNN::Express::Module::load({}, {}, model_data.data(), model_data.size(), rtMgr, &config));
@@ -172,7 +172,7 @@ bool OcrEngine::init(int num_thread) {
                 MNN::Express::Executor::RuntimeManager::createRuntimeManager(sched));
 
             MNN::Express::Module::Config config;
-            config.shapeMutable = false;
+            config.shapeMutable = true;
             config.rearrange = true;
 
             m_cls_module.reset(MNN::Express::Module::load({}, {}, model_data.data(), model_data.size(), rtMgr, &config));
@@ -223,9 +223,8 @@ std::string OcrEngine::decode(const float* data, int seq_len, int class_num, flo
     std::string result;
     confidence = 1.0f;
     int last_idx = -1;
-    // PP-OCR: blank = 0（全角空格），class_num 包含 blank
+    // blank = 0（全角空格是 blank），char_idx = max_idx - 1
     int blank_idx = 0;
-
     for (int t = 0; t < seq_len; t++) {
         int max_idx = 0;
         float max_val = data[t * class_num];
@@ -233,13 +232,10 @@ std::string OcrEngine::decode(const float* data, int seq_len, int class_num, flo
             float val = data[t * class_num + c];
             if (val > max_val) { max_val = val; max_idx = c; }
         }
-        if (max_idx == blank_idx) {
-            // blank，跳过
+        if (max_idx == blank_idx || max_idx == class_num - 1) {
             continue;
         }
-        // CTC 合并重复字符
         if (max_idx != last_idx) {
-            // 字典索引 = max_idx - 1（去掉 blank 占位）
             int char_idx = max_idx - 1;
             if (char_idx >= 0 && char_idx < (int)m_dict.size()) {
                 result += m_dict[char_idx];
@@ -519,55 +515,40 @@ TextLine OcrEngine::recognize_text(const uint8_t* img, int w, int h, const float
     if (bw < 2 || bh < 2) return result;
 
     int rec_h = 48;
-    int rec_w = std::max(4, (int)(rec_h * w_avg / h_avg + 0.5f));
-    // PP-OCR 要求宽度是 8 的倍数
+    // 按比例计算宽度，但保证最少 320（确保 seq_len 足够）
+    int rec_w = std::max(320, (int)(rec_h * w_avg / h_avg + 0.5f));
+    // 8 对齐
     rec_w = (rec_w + 7) / 8 * 8;
 
-    // 用 ImageProcess 做双线性缩放
-    auto src_tensor = MNN::CV::ImageProcess::createImageTensor<uint8_t>(w, h, 4, const_cast<uint8_t*>(img));
-    
+    // 用 ImageProcess 做双线性缩放到 float 直接作为输入
+    auto input_var = MNN::Express::_Input({1, 3, rec_h, rec_w}, MNN::Express::NCHW, halide_type_of<float>());
+    auto input_ptr = input_var->writeMap<float>();
+
     MNN::CV::ImageProcess::Config cfg;
     cfg.sourceFormat = MNN::CV::RGBA;
     cfg.destFormat   = MNN::CV::RGB;
     cfg.filterType   = MNN::CV::BILINEAR;
+    float mean[3] = {0.0f, 0.0f, 0.0f};
+    float norm[3] = {1.0f/255.0f, 1.0f/255.0f, 1.0f/255.0f};
+    memcpy(cfg.mean, mean, sizeof(mean));
+    memcpy(cfg.normal, norm, sizeof(norm));
     auto pretreat = std::unique_ptr<MNN::CV::ImageProcess>(MNN::CV::ImageProcess::create(cfg));
     
     MNN::CV::Matrix trans;
-    // 从目标 ROI 映射到源图像
     float src_scale_x = (float)bw / rec_w;
     float src_scale_y = (float)bh / rec_h;
     trans.setScale(src_scale_x, src_scale_y);
     trans.postTranslate((float)min_x, (float)min_y);
     pretreat->setMatrix(trans);
 
-    // 创建目标 tensor
-    auto dst_tensor = MNN::Tensor::create<uint8_t>({rec_h, rec_w, 3}, nullptr, MNN::Tensor::TENSORFLOW);
-    pretreat->convert(img, w, h, w * 4, dst_tensor->host<uint8_t>(), rec_w, rec_h, 3, 0, halide_type_of<uint8_t>());
+    pretreat->convert(img, w, h, w * 4, input_ptr, rec_w, rec_h, 0, 0, halide_type_of<float>());
     
-    // 如果分类需要翻转
-    if (need_flip && m_cls_module) {
-        auto data = dst_tensor->host<uint8_t>();
-        std::vector<uint8_t> flipped(data, data + rec_h * rec_w * 3);
-        for (int hh = 0; hh < rec_h; hh++)
-            for (int ww = 0; ww < rec_w; ww++)
-                for (int cc = 0; cc < 3; cc++)
-                    data[(hh * rec_w + ww) * 3 + cc] = flipped[((rec_h - 1 - hh) * rec_w + ww) * 3 + cc];
-    }
-
-    // 输入 tensor
-    auto input_var = MNN::Express::_Input({1, 3, rec_h, rec_w}, MNN::Express::NCHW, halide_type_of<float>());
-    auto input_ptr = input_var->writeMap<float>();
-
-    auto crop_data = dst_tensor->host<uint8_t>();
+    // HWC → CHW
+    std::vector<float> hwc_buf(input_ptr, input_ptr + rec_h * rec_w * 3);
     for (int c = 0; c < 3; c++)
         for (int hh = 0; hh < rec_h; hh++)
-            for (int ww = 0; ww < rec_w; ww++) {
-                float val = (float)crop_data[(hh * rec_w + ww) * 3 + c];
-                input_ptr[c * rec_h * rec_w + hh * rec_w + ww] = (val / 255.0f - 0.5f) / 0.5f;
-            }
-    
-    MNN::Tensor::destroy(src_tensor);
-    MNN::Tensor::destroy(dst_tensor);
+            for (int ww = 0; ww < rec_w; ww++)
+                input_ptr[c * rec_h * rec_w + hh * rec_w + ww] = (hwc_buf[(hh * rec_w + ww) * 3 + c] - 0.5f) / 0.5f;
 
     auto outputs = m_rec_module->onForward({input_var});
     if (outputs.empty() || !outputs[0]->getInfo()) return result;
