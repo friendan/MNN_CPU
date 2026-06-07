@@ -19,6 +19,7 @@
 #include <MNN/expr/Module.hpp>
 #include <MNN/expr/Executor.hpp>
 #include <MNN/ImageProcess.hpp>
+#include <MNN/Matrix.h>
 #include <MNN/MNNDefine.h>
 
 #include "ocr/resource.h"

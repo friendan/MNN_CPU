@@ -1,5 +1,6 @@
 @echo off
-cd /d "%~dp0.."
+cd /d "%~dp0."
+call "%~dp0init_env.bat" || exit /b 1
 set "BUILD_DIR=build_ocr_test_debug"
 if exist %BUILD_DIR% rmdir /s /q %BUILD_DIR%
 mkdir %BUILD_DIR%

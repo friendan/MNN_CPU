@@ -16,9 +16,10 @@
 #include <string>
 
 #define WIN32_LEAN_AND_MEAN
+#define NOMINMAX
 #include <windows.h>
 
-#define STB_IMAGE_IMPLEMENTATION
+// stb_image 的 STB_IMAGE_IMPLEMENTATION 在 MNN_OcrApi.cpp 中定义一次
 #include "stb_image.h"
 
 namespace MNN {
@@ -255,7 +256,7 @@ std::vector<TextBox> OcrEngine::detect(const uint8_t* image_data, int width, int
     memcpy(cfg.normal, norm, sizeof(norm));
 
     auto pretreat = std::unique_ptr<MNN::CV::ImageProcess>(MNN::CV::ImageProcess::create(cfg));
-    MNN::Matrix trans;
+    MNN::CV::Matrix trans;
     trans.setScale((float)resized_w / width, (float)resized_h / height);
     pretreat->setMatrix(trans);
 
