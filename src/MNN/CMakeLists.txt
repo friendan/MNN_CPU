@@ -4,16 +4,30 @@ project(MNN LANGUAGES C CXX)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
-# 禁用 MNN 内部的 CRT 设置，跟随主工程
+# 链接方式选项: SHARED=DLL, STATIC=静态库
+option(MNN_BUILD_SHARED "Build MNN as shared library (DLL)" ON)
+
+# MT / MTd 运行时链接
 if(MSVC)
+    # 强制使用 MT（多线程静态链接），避免依赖 MSVCRT DLL
+    foreach(flag_var
+        CMAKE_C_FLAGS CMAKE_C_FLAGS_DEBUG CMAKE_C_FLAGS_RELEASE CMAKE_C_FLAGS_MINSIZEREL CMAKE_C_FLAGS_RELWITHDEBINFO
+        CMAKE_CXX_FLAGS CMAKE_CXX_FLAGS_DEBUG CMAKE_CXX_FLAGS_RELEASE CMAKE_CXX_FLAGS_MINSIZEREL CMAKE_CXX_FLAGS_RELWITHDEBINFO)
+        if(${flag_var} MATCHES "/MD")
+            string(REGEX REPLACE "/MD" "/MT" ${flag_var} "${${flag_var}}")
+        endif()
+    endforeach()
+
     add_definitions(-D_CRT_SECURE_NO_WARNINGS)
-    # /FS 允许多进程并行写入同一个 .pdb
-    # /Fd 指定 .pdb 输出到 build 目录而非 lib 目录
     set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} /FS /wd4267 /wd4018 /wd4251 /wd4996 /wd4244 /wd4146 /wd4129 /wd4305 /wd4275 /wd4101")
     set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} /FS /wd4267 /wd4018 /wd4251 /wd4996 /wd4244 /wd4146 /wd4129 /wd4305 /wd4275 /wd4101")
 endif()
 
-add_definitions(-DMNN_BUILD_STATIC_LIBS)
+if(MNN_BUILD_SHARED)
+    add_definitions(-DBUILDING_MNN_DLL)
+else()
+    add_definitions(-DMNN_BUILD_STATIC_LIBS)
+endif()
 add_definitions(-DMNN_USE_THREAD_POOL)
 
 # 头文件路径
@@ -58,8 +72,12 @@ set(MNN_SOURCES
     ${MNN_CPU_BACKEND_SRC}
 )
 
-# 静态库
-add_library(MNN STATIC ${MNN_SOURCES})
+# 库类型: DLL 或 静态库
+if(MNN_BUILD_SHARED)
+    add_library(MNN SHARED ${MNN_SOURCES})
+else()
+    add_library(MNN STATIC ${MNN_SOURCES})
+endif()
 
 # MNNFileUtils.cpp 使用 ANSI 版 Windows API，取消 UNICODE 避免展开为 W 版本
 set_source_files_properties(
@@ -72,6 +90,8 @@ set_source_files_properties(
 set_target_properties(MNN PROPERTIES
     ARCHIVE_OUTPUT_DIRECTORY_DEBUG "${CMAKE_CURRENT_BINARY_DIR}/MNN"
     ARCHIVE_OUTPUT_DIRECTORY_RELEASE "${CMAKE_CURRENT_BINARY_DIR}/MNN"
+    RUNTIME_OUTPUT_DIRECTORY_DEBUG "${CMAKE_CURRENT_BINARY_DIR}/MNN"
+    RUNTIME_OUTPUT_DIRECTORY_RELEASE "${CMAKE_CURRENT_BINARY_DIR}/MNN"
     OUTPUT_NAME_DEBUG "MNN_dbg"
     OUTPUT_NAME_RELEASE "MNN"
 )
