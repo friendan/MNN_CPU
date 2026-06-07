@@ -515,12 +515,10 @@ TextLine OcrEngine::recognize_text(const uint8_t* img, int w, int h, const float
     if (bw < 2 || bh < 2) return result;
 
     int rec_h = 48;
-    // 按比例计算宽度，但保证最少 320（确保 seq_len 足够）
+    // 按比例计算宽度，但保证最少 320
     int rec_w = std::max(320, (int)(rec_h * w_avg / h_avg + 0.5f));
-    // 8 对齐
     rec_w = (rec_w + 7) / 8 * 8;
 
-    // 用 ImageProcess 做双线性缩放到 float 直接作为输入
     auto input_var = MNN::Express::_Input({1, 3, rec_h, rec_w}, MNN::Express::NCHW, halide_type_of<float>());
     auto input_ptr = input_var->writeMap<float>();
 
@@ -535,15 +533,12 @@ TextLine OcrEngine::recognize_text(const uint8_t* img, int w, int h, const float
     auto pretreat = std::unique_ptr<MNN::CV::ImageProcess>(MNN::CV::ImageProcess::create(cfg));
     
     MNN::CV::Matrix trans;
-    float src_scale_x = (float)bw / rec_w;
-    float src_scale_y = (float)bh / rec_h;
-    trans.setScale(src_scale_x, src_scale_y);
+    trans.setScale((float)bw / rec_w, (float)bh / rec_h);
     trans.postTranslate((float)min_x, (float)min_y);
     pretreat->setMatrix(trans);
 
     pretreat->convert(img, w, h, w * 4, input_ptr, rec_w, rec_h, 0, 0, halide_type_of<float>());
     
-    // HWC → CHW
     std::vector<float> hwc_buf(input_ptr, input_ptr + rec_h * rec_w * 3);
     for (int c = 0; c < 3; c++)
         for (int hh = 0; hh < rec_h; hh++)
@@ -572,7 +567,6 @@ TextLine OcrEngine::recognize_text(const uint8_t* img, int w, int h, const float
     }
     if (seq_len <= 0 || class_num <= 0) return result;
 
-    // 重排为 (seq_len, class_num)
     std::vector<float> reshaped(seq_len * class_num);
     memcpy(reshaped.data(), out_ptr, seq_len * class_num * sizeof(float));
     
